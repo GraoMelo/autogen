@@ -112,20 +112,23 @@ jobs:
         run: |
           mkdir -p evidence
           git lfs install --local 2>&1 | tee evidence/lfs-install.txt
-          # DO NOT run git lfs fetch - it re-downloads and overwrites poisoned cache
-          # Instead, use git lfs smudge directly on LFS pointer files
-          echo "=== Forcing smudge from poisoned cache ==="
-          git lfs checkout --force 2>&1 | tee evidence/lfs-checkout.txt || true
+          # The key attack: poisoned .git/lfs/objects are already restored by cache
+          # git lfs checkout will use them if they exist locally
+          # DO NOT run git lfs fetch - it would re-download from server
+          git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt || true
           echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
           echo ""
-          echo "=== Checking image content (first bytes) ==="
-          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -5); do
-            echo "File: $img"
-            echo "Size: $(stat -c%s $img 2>/dev/null)"
-            echo "SHA256: $(sha256sum $img 2>/dev/null | awk '{print $1}')"
-            echo "First bytes: $(xxd -p $img 2>/dev/null | head -c 32)"
-            echo "---"
+          echo "=== Checking which files are LFS pointers vs real content ==="
+          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -10); do
+            SIZE=$(stat -c%s "$img" 2>/dev/null)
+            SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
+            HEAD=$(head -c 20 "$img" 2>/dev/null | xxd -p)
+            echo "$img size=$SIZE sha256=$SHA head=$HEAD"
+            echo "$img size=$SIZE sha256=$SHA head=$HEAD" >> evidence/image-check.txt
           done
+          echo ""
+          echo "=== LFS objects in .git/lfs/objects ==="
+          find .git/lfs/objects -type f 2>/dev/null | head -20
 
       - name: V2 - Integrity guarantee check on autogen images
         run: |
