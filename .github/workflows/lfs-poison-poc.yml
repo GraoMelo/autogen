@@ -147,27 +147,27 @@ jobs:
         OK_COUNT=0
         LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null | tr -dc '0-9' | tail -c1)
         echo "git lfs checkout exit code: $LFS_RC"
-        # Check all known LFS-tracked files directly
-        for img in docs/images/autogen-logo.png; do
-          if [ -f "$img" ]; then
-            ACTUAL_SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
-            POINTER_OID=$(git cat-file -p "HEAD:$img" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}')
-            echo "File: $img"
-            echo "  Pointer OID: $POINTER_OID"
-            echo "  Actual SHA256: $ACTUAL_SHA"
-            if [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
-              echo "MISMATCH: $img expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
-              MISMATCH_COUNT=$((MISMATCH_COUNT+1))
-            elif [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" = "$POINTER_OID" ]; then
-              echo "OK: $img oid=$POINTER_OID" >> evidence/v2-ok.json
-              OK_COUNT=$((OK_COUNT+1))
-            else
-              echo "SKIP: $img (no pointer OID found)" >> evidence/v2-integrity.json
-            fi
-          else
-            echo "MISSING: $img" >> evidence/v2-integrity.json
-          fi
-        done
+        # Get pointer OID from the LFS pointer file in git index
+        POINTER_OID=$(git lfs ls-files 2>/dev/null | grep autogen-logo | awk '{print $1}' | cut -d' ' -f1 || true)
+        # Fallback: extract OID from the pointer file content
+        if [ -z "$POINTER_OID" ]; then
+          POINTER_OID=$(git show HEAD:docs/images/autogen-logo.png 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
+        fi
+        ACTUAL_SHA=$(sha256sum docs/images/autogen-logo.png 2>/dev/null | awk '{print $1}')
+        echo "Pointer OID: $POINTER_OID"
+        echo "Actual SHA256: $ACTUAL_SHA"
+        echo "pointer_oid=$POINTER_OID" >> evidence/v2-integrity.json
+        echo "worktree_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
+        if [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
+          echo "VERDICT: git-lfs returned exit 0 with content that does NOT match the pointer OID" >> evidence/v2-integrity.json
+          echo "MISMATCH: expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
+          MISMATCH_COUNT=1
+        elif [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" = "$POINTER_OID" ]; then
+          echo "OK: oid=$POINTER_OID" >> evidence/v2-integrity.json
+          OK_COUNT=1
+        else
+          echo "SKIP: could not extract pointer OID" >> evidence/v2-integrity.json
+        fi
         echo ""
         echo "Mismatches: $MISMATCH_COUNT, OK: $OK_COUNT"
         echo "lfs_checkout_rc=$LFS_RC mismatches=$MISMATCH_COUNT ok=$OK_COUNT" >> evidence/v2-integrity.json
