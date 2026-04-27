@@ -120,8 +120,10 @@ jobs:
         run: |
           mkdir -p evidence
           echo "=== V2: Integrity Guarantee Test on microsoft/autogen LFS images ==="
+          echo "Checking all LFS pointer files against working tree content..."
           MISMATCH_COUNT=0
           TOTAL=0
+          # Find all LFS pointer files by reading git attributes and checking pointers
           git lfs ls-files 2>/dev/null | while read oid_star path; do
             TOTAL=$((TOTAL+1))
             if [ -f "$path" ]; then
@@ -133,9 +135,24 @@ jobs:
               fi
             fi
           done
+          # Also directly check known LFS-tracked image files
+          echo "--- Direct image file checks ---" 
+          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -20); do
+            TOTAL=$((TOTAL+1))
+            # Read the pointer OID from git
+            POINTER_OID=$(git cat-file -p "HEAD:$img" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}')
+            ACTUAL_SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
+            if [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
+              echo "MISMATCH: $img expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
+              MISMATCH_COUNT=$((MISMATCH_COUNT+1))
+            elif [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" = "$POINTER_OID" ]; then
+              echo "OK: $img sha256 matches pointer" >> evidence/v2-ok.json
+            fi
+          done
           echo ""
-          echo "Summary:"
-          echo "Total LFS files checked: $(cat evidence/v2-integrity.json 2>/dev/null | wc -l)"
+          MISMATCHES=$(wc -l < evidence/v2-integrity.json 2>/dev/null || echo 0)
+          OKS=$(wc -l < evidence/v2-ok.json 2>/dev/null || echo 0)
+          echo "Mismatches: $MISMATCHES, OK: $OKS"
           cat evidence/v2-integrity.json 2>/dev/null | head -10
           echo ""
           LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null || echo "unknown")
