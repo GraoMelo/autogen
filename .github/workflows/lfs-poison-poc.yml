@@ -107,57 +107,52 @@ jobs:
           path: .git/lfs
           key: autogen-lfs-poison-${{ github.run_id }}-poison
 
-      - name: Run git lfs checkout (consume poisoned cache)
+      - name: Run git lfs smudge (consume poisoned cache directly)
         continue-on-error: true
         run: |
           mkdir -p evidence
           git lfs install --local 2>&1 | tee evidence/lfs-install.txt
-          git lfs fetch origin 2>&1 | tee evidence/lfs-fetch.txt || true
-          git lfs checkout 2>&1 | tee evidence/lfs-checkout.txt
+          # DO NOT run git lfs fetch - it re-downloads and overwrites poisoned cache
+          # Instead, use git lfs smudge directly on LFS pointer files
+          echo "=== Forcing smudge from poisoned cache ==="
+          git lfs checkout --force 2>&1 | tee evidence/lfs-checkout.txt || true
           echo "lfs_checkout_rc=$?" >> evidence/lfs-checkout-rc.txt
+          echo ""
+          echo "=== Checking image content (first bytes) ==="
+          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -5); do
+            echo "File: $img"
+            echo "Size: $(stat -c%s $img 2>/dev/null)"
+            echo "SHA256: $(sha256sum $img 2>/dev/null | awk '{print $1}')"
+            echo "First bytes: $(xxd -p $img 2>/dev/null | head -c 32)"
+            echo "---"
+          done
 
       - name: V2 - Integrity guarantee check on autogen images
         run: |
           mkdir -p evidence
-          echo "=== V2: Integrity Guarantee Test on microsoft/autogen LFS images ==="
-          echo "Checking all LFS pointer files against working tree content..."
+          echo "=== V2: Integrity Guarantee Test ==="
           MISMATCH_COUNT=0
-          TOTAL=0
-          # Find all LFS pointer files by reading git attributes and checking pointers
-          git lfs ls-files 2>/dev/null | while read oid_star path; do
-            TOTAL=$((TOTAL+1))
-            if [ -f "$path" ]; then
-              ACTUAL=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
-              CLEAN_OID=$(echo "$oid_star" | tr -d '*')
-              if [ "$ACTUAL" != "$CLEAN_OID" ]; then
-                MISMATCH=$((MISMATCH_COUNT+1))
-                echo "MISMATCH: $path expected_oid=$CLEAN_OID actual_sha256=$ACTUAL" >> evidence/v2-integrity.json
+          OK_COUNT=0
+          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -20); do
+            POINTER_OID=$(git cat-file -p "HEAD:$img" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}')
+            if [ -n "$POINTER_OID" ]; then
+              ACTUAL_SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
+              if [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
+                echo "MISMATCH: $img expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
+                MISMATCH_COUNT=$((MISMATCH_COUNT+1))
+              else
+                echo "OK: $img" >> evidence/v2-ok.json
+                OK_COUNT=$((OK_COUNT+1))
               fi
             fi
           done
-          # Also directly check known LFS-tracked image files
-          echo "--- Direct image file checks ---" 
-          for img in $(find . -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -20); do
-            TOTAL=$((TOTAL+1))
-            # Read the pointer OID from git
-            POINTER_OID=$(git cat-file -p "HEAD:$img" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}')
-            ACTUAL_SHA=$(sha256sum "$img" 2>/dev/null | awk '{print $1}')
-            if [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
-              echo "MISMATCH: $img expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
-              MISMATCH_COUNT=$((MISMATCH_COUNT+1))
-            elif [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" = "$POINTER_OID" ]; then
-              echo "OK: $img sha256 matches pointer" >> evidence/v2-ok.json
-            fi
-          done
           echo ""
-          MISMATCHES=$(wc -l < evidence/v2-integrity.json 2>/dev/null || echo 0)
-          OKS=$(wc -l < evidence/v2-ok.json 2>/dev/null || echo 0)
-          echo "Mismatches: $MISMATCHES, OK: $OKS"
+          echo "Mismatches: $MISMATCH_COUNT, OK: $OK_COUNT"
           cat evidence/v2-integrity.json 2>/dev/null | head -10
           echo ""
-          LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null || echo "unknown")
+          LFS_RC=$(grep -o '[0-9]' evidence/lfs-checkout-rc.txt 2>/dev/null | tail -1)
           echo "git lfs checkout exit code: $LFS_RC"
-          echo "lfs_checkout_rc=$LFS_RC" >> evidence/v2-integrity.json
+          echo "lfs_checkout_rc=$LFS_RC mismatches=$MISMATCH_COUNT ok=$OK_COUNT" >> evidence/v2-integrity.json
 
       - name: V5 - Supply chain boundary check (NuGet icon)
         run: |
