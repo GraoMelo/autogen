@@ -156,17 +156,17 @@ jobs:
           git cat-file -t "$BLOB_HASH" 2>&1 | tee evidence/v2-debug-type.txt || true
           echo "--- git cat-file -p ---"
           git cat-file -p "$BLOB_HASH" 2>&1 | tee evidence/v2-debug-blob.txt || true
-          POINTER_OID=$(git cat-file -p "$BLOB_HASH" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
+          POINTER_OID=$(git cat-file -p "$BLOB_HASH" 2>/dev/null | grep 'oid sha256:' | sed 's/oid sha256://' | tr -d '[:space:]' || true)
         else
           echo "BLOB_HASH is empty, trying direct cat-file -p HEAD:path"
           git cat-file -p HEAD:docs/images/autogen-logo.png 2>&1 | tee evidence/v2-debug-blob.txt || true
-          POINTER_OID=$(git cat-file -p HEAD:docs/images/autogen-logo.png 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
+          POINTER_OID=$(git cat-file -p HEAD:docs/images/autogen-logo.png 2>/dev/null | grep 'oid sha256:' | sed 's/oid sha256://' | tr -d '[:space:]' || true)
         fi
         # Fallback: use baseline hashes
         if [ -z "$POINTER_OID" ]; then
           echo "Trying git show..."
           git show HEAD:docs/images/autogen-logo.png 2>&1 | tee evidence/v2-debug-show.txt || true
-          POINTER_OID=$(git show HEAD:docs/images/autogen-logo.png 2>/dev/null | head -5 | grep 'oid sha256:' | awk '{print $3}' || true)
+          POINTER_OID=$(git show HEAD:docs/images/autogen-logo.png 2>/dev/null | head -5 | grep 'oid sha256:' | sed 's/oid sha256://' | tr -d '[:space:]' || true)
         fi
         ACTUAL_SHA=$(sha256sum docs/images/autogen-logo.png 2>/dev/null | awk '{print $1}')
         echo "Pointer OID: $POINTER_OID"
