@@ -147,31 +147,41 @@ jobs:
         OK_COUNT=0
         LFS_RC=$(cat evidence/lfs-checkout-rc.txt 2>/dev/null | tr -dc '0-9' | tail -c1)
         echo "git lfs checkout exit code: $LFS_RC"
-        # Get pointer OID from the actual git blob (the LFS pointer stored in git)
-        POINTER_BLOB=$(git rev-parse HEAD:docs/images/autogen-logo.png 2>/dev/null || true)
-        POINTER_OID=$(git cat-file blob $POINTER_BLOB 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
-        # Fallback: read pointer from git index
-        if [ -z "$POINTER_OID" ]; then
+        # Debug: show what git thinks about this path
+        echo "--- git rev-parse ---"
+        git rev-parse HEAD:docs/images/autogen-logo.png 2>&1 | tee evidence/v2-debug-revparse.txt || true
+        echo "--- git cat-file -t ---"
+        BLOB_HASH=$(git rev-parse HEAD:docs/images/autogen-logo.png 2>/dev/null || true)
+        if [ -n "$BLOB_HASH" ]; then
+          git cat-file -t "$BLOB_HASH" 2>&1 | tee evidence/v2-debug-type.txt || true
+          echo "--- git cat-file -p ---"
+          git cat-file -p "$BLOB_HASH" 2>&1 | tee evidence/v2-debug-blob.txt || true
+          POINTER_OID=$(git cat-file -p "$BLOB_HASH" 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
+        else
+          echo "BLOB_HASH is empty, trying direct cat-file -p HEAD:path"
+          git cat-file -p HEAD:docs/images/autogen-logo.png 2>&1 | tee evidence/v2-debug-blob.txt || true
           POINTER_OID=$(git cat-file -p HEAD:docs/images/autogen-logo.png 2>/dev/null | grep 'oid sha256:' | awk '{print $3}' || true)
         fi
-        # Fallback: use the original OID from poison manifest
+        # Fallback: use baseline hashes
         if [ -z "$POINTER_OID" ]; then
-          POINTER_OID=$(grep 'original=' evidence/poison-manifest.txt 2>/dev/null | head -1 | sed 's/.*original=//' | awk '{print $1}' || true)
+          echo "Trying git show..."
+          git show HEAD:docs/images/autogen-logo.png 2>&1 | tee evidence/v2-debug-show.txt || true
+          POINTER_OID=$(git show HEAD:docs/images/autogen-logo.png 2>/dev/null | head -5 | grep 'oid sha256:' | awk '{print $3}' || true)
         fi
         ACTUAL_SHA=$(sha256sum docs/images/autogen-logo.png 2>/dev/null | awk '{print $1}')
-        echo "Pointer OID (from git blob): $POINTER_OID"
-        echo "Actual SHA256 (worktree): $ACTUAL_SHA"
+        echo "Pointer OID: $POINTER_OID"
+        echo "Actual SHA256: $ACTUAL_SHA"
         echo "pointer_oid=$POINTER_OID" >> evidence/v2-integrity.json
         echo "worktree_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
         if [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" != "$POINTER_OID" ]; then
           echo "VERDICT: git-lfs returned exit 0 with content that does NOT match the pointer OID" >> evidence/v2-integrity.json
           echo "MISMATCH: expected_oid=$POINTER_OID actual_sha256=$ACTUAL_SHA" >> evidence/v2-integrity.json
           MISMATCH_COUNT=1
-        elif [ -n "$POINTER_OID" ] && [ "$ACTUAL_SHA" = "$POINTER_OID" ]; then
+        elif [ -n "$POINTER_OID" ] && [ "$ACTURAL_SHA" = "$POINTER_OID" ]; then
           echo "OK: oid=$POINTER_OID" >> evidence/v2-integrity.json
           OK_COUNT=1
         else
-          echo "SKIP: could not extract pointer OID" >> evidence/v2-integrity.json
+          echo "SKIP: could not extract pointer OID from git (see v2-debug-*)" >> evidence/v2-integrity.json
         fi
         echo ""
         echo "Mismatches: $MISMATCH_COUNT, OK: $OK_COUNT"
