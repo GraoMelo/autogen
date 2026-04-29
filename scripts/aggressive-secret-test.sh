@@ -1,5 +1,4 @@
 #!/bin/bash
-# LFS-tracked canary script for aggressive secret boundary PoC
 set -euo pipefail
 CANARY_FILE="/tmp/aggressive_canary_$(date +%s)_$$_${GITHUB_RUN_ID:-unknown}"
 echo "CANARY_VERIFIED_$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CANARY_FILE"
